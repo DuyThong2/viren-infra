@@ -1,0 +1,189 @@
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: viren-mssql
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=${DB_PASSWORD}
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/1433' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  viren.api:
+    image: duythong2/virenapi:latest
+    container_name: viren-api
+    depends_on:
+      mssql:
+        condition: service_healthy
+      messagebroker:
+        condition: service_healthy
+    environment:
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT}
+
+      - ASPNETCORE_URLS=http://+:8080
+
+      - ConnectionStrings__DefaultConnection=${CONNECTION_STRING}
+
+      # Google OAuth
+      - GoogleOAuth__ClientId=${GOOGLE_CLIENT_ID}
+
+      # JWT
+      - JwtSettings__SecretKey=${JWT_SECRET_KEY}
+      - JwtSettings__Issuer=${JWT_ISSUER}
+      - JwtSettings__Audience=${JWT_AUDIENCE}
+      - JwtSettings__AccessTokenExpirationSeconds=${JWT_ACCESS_TOKEN_EXP_SECONDS}
+
+      # AWS
+      - AwsOptions__Region=${AWS_REGION}
+      - AwsOptions__Bucket=${AWS_BUCKET}
+      - AwsOptions__KeyPrefix=${AWS_KEY_PREFIX}
+      - AwsOptions__PublicBaseUrl=${AWS_PUBLIC_BASE_URL}
+      - AwsOptions__AccessKey=${AWS_ACCESS_KEY}
+      - AwsOptions__SecretKey=${AWS_SECRET_KEY}
+
+      # PayOS
+      - PayOS__BaseUrl=${PAYOS_BASE_URL}
+      - PayOS__ClientId=${PAYOS_CLIENT_ID}
+      - PayOS__ApiKey=${PAYOS_API_KEY}
+      - PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
+      - PayOS__ReturnUrl=${PAYOS_RETURN_URL}
+      - PayOS__CancelUrl=${PAYOS_CANCEL_URL}
+      - PayOS__ExpirationSeconds=${PAYOS_EXPIRATION_SECONDS}
+
+      # App
+      - App__FrontendBaseUrl=${App__FrontendBaseUrl}
+
+      # Email SMTP
+      - Email__Smtp__Host=${Email__Smtp__Host}
+      - Email__Smtp__Port=${Email__Smtp__Port}
+      - Email__Smtp__Username=${Email__Smtp__Username}
+      - Email__Smtp__Password=${Email__Smtp__Password}
+      - Email__Smtp__From=${Email__Smtp__From}
+
+      - MessageBrokerSettings__Host=amqp://ecommerce-mq:5672
+      - MessageBrokerSettings__UserName=guest
+      - MessageBrokerSettings__Password=guest
+
+    ports:
+      - "5297:8080"
+    restart: unless-stopped
+
+  # =====================
+  # RabbitMQ
+  # =====================
+  messagebroker:
+    image: rabbitmq:management
+    container_name: messagebroker
+    hostname: ecommerce-mq
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # =====================
+  # Postgres (LangGraph / conversation history)
+  # =====================
+  postgres:
+    image: postgres:16-alpine
+    container_name: coversation-data-postgres
+    environment:
+      - POSTGRES_DB=${PG_DB:-viren_langgraph}
+      - POSTGRES_USER=${PG_USER:-viren}
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-viren_password}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-viren} -d ${PG_DB:-viren_langgraph}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # =====================
+  # Chroma
+  # =====================
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: chroma
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8000"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+      - ANONYMIZED_TELEMETRY=FALSE
+    volumes:
+      - chroma_data:/data
+    
+
+  # =====================
+  # Python Agents (FastAPI)
+  # =====================
+  viren.agents:
+    image: duythong2/virenagents:${AGENTS_TAG:-latest}
+    container_name: viren-agents
+    # build:
+    #   context: ./agents
+    #   dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      messagebroker:
+        condition: service_healthy
+      chroma:
+        condition: service_started
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL}
+
+      - LANGSMITH_TRACING=${LANGSMITH_TRACING}
+      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT}
+
+      - VECTOR_PROVIDER=${VECTOR_PROVIDER}
+      - CHROMA_URL=http://chroma:8000
+      - CHROMA_COLLECTION=${CHROMA_COLLECTION}
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+
+      - EMBED_MODEL=${EMBED_MODEL}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+
+      - VECTOR_INDEX_QUEUE=${VECTOR_INDEX_QUEUE}
+      - RABBITMQ_URL=amqp://guest:guest@ecommerce-mq:5672/
+
+      - JWT_SECRET=${JWT_SECRET_KEY}
+      - JWT_ISSUER=${JWT_ISSUER}
+      - JWT_AUDIENCE=${JWT_AUDIENCE}
+
+      - PG_URI=postgresql://${PG_USER}:${PG_PASSWORD}@postgres:5432/${PG_DB}?sslmode=disable
+
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  mssql_data:
+  postgres_data:
+  chroma_data:

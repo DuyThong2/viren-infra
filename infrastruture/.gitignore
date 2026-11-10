@@ -1,0 +1,24 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Secrets & credentials
+*.env
+*.env.*
+viren-ec2-key
+viren-ec2-key.pub
+*.pem
+*.ppk
+
+# Backups
+*.bak
